@@ -1,194 +1,62 @@
 # Name-to-Language Classification with RNN, LSTM, and GRU
 
-A PyTorch implementation comparing three recurrent neural network architectures — **Vanilla RNN**, **LSTM**, and **GRU** — on the task of classifying names by their language of origin.
+A PyTorch experiment comparing three recurrent architectures on **name-to-language classification**. Each name is read one character at a time; the model predicts one of 18 language labels. This is a prediction from spelling patterns in the supplied dataset, not a determination of a person's nationality.
 
 Inspired by [Jake Tae's PyTorch RNN tutorial](https://jaketae.github.io/study/pytorch-rnn/).
 
----
+## Why compare these models?
 
-## Project Overview
+A name is a sequence: letter combinations and endings can carry information about its language label. One-hot character vectors preserve the exact observed character without requiring pretrained embeddings. A recurrent model updates a state after each letter, allowing the final state to summarize earlier letters for classification.
 
-Given a person's name as input, the model predicts which language (nationality) the name originates from. Each character in the name is processed sequentially as a one-hot encoded vector, and the final hidden state is used to classify the language.
+The experiment places a manually written vanilla RNN beside PyTorch's built-in LSTM and GRU. A vanilla RNN repeatedly transforms its previous hidden state; during backpropagation through many steps, gradients can become small or large. LSTM and GRU use learned gates to control what information is retained or replaced, which can help information flow across longer sequences. LSTM maintains both hidden and cell states; GRU uses a hidden state with fewer gate types. Those are architectural motivations, not proof that gating caused any particular score in this run.
 
-**Example predictions:**
-- `"Mike"` → English
-- `"Qin"` → Chinese
-- `"Fernando"` → Spanish/Portuguese
+## Data and encoding
 
----
+[`data/data/names/`](data/data/names/) contains 18 text files, one language label per filename and one name per line. There are 20,074 lines across those files before preprocessing. [`utils.py`](utils.py) transliterates names with `unidecode`, skips names containing characters outside its fixed vocabulary, and converts each remaining name to a tensor of shape `(name length, 1, vocabulary size)`. The vocabulary consists of ASCII uppercase and lowercase letters plus a few spaces and punctuation marks.
 
-## Dataset
+The code makes a stratified **90/10 train/test split** after encoding. It does not pass a split seed to `train_test_split`. It sets a PyTorch seed but does not fix Python's shuffle or file enumeration order, so exact reruns are not guaranteed. The number of accepted names and the test-set count are not recorded in the repository.
 
-The project uses the **Names Dataset** from the PyTorch RNN tutorial, containing names from 18 different languages stored as `.txt` files under `./data/data/names/`.
+## Architectures and training
 
-Each file is named after the language (e.g., `English.txt`, `Chinese.txt`) and contains one name per line.
+| Script | Implementation | State and classifier | Device handling |
+| --- | --- | --- | --- |
+| [`rnn.py`](rnn.py) | Manual single-layer RNN cell with `tanh` | Concatenates the current character and previous hidden state; its final step produces language logits | CPU tensors |
+| [`lstm.py`](lstm.py) | Two-layer `nn.LSTM` | Classifies the final timestep output; hidden and cell states | CUDA when available, otherwise CPU |
+| [`gru.py`](gru.py) | Two-layer `nn.GRU` | Classifies the final timestep output; hidden state | CPU tensors |
 
-**Preprocessing:**
-- Unicode characters are normalized using `unidecode`
-- Names are converted to one-hot tensors of shape `(seq_len, 1, num_letters)`
-- An 90/10 train/test stratified split is applied
+All three scripts use hidden size 256, Adam with learning rate 0.0005, cross-entropy loss, gradient clipping at norm 1, and 15 epochs. They shuffle the training examples each epoch and update weights after each name. Gradient clipping limits large updates; it does not eliminate vanishing gradients. The RNN has one layer while LSTM and GRU have two, so this is an **architecture comparison**, not a controlled test of gating alone.
 
----
+For a sequence of character vectors `x₁ … xₜ`, the basic idea is to update a state `hₜ` from `xₜ` and `hₜ₋₁`, then use the final output to predict a language. Cross-entropy rewards higher scores for the correct label. The gated models add learned controls over the state update, which may help retain useful early letters while processing later ones.
 
-## Project Structure
+## Results and interpretation
 
-```
-├── utils.py          # Data loading, preprocessing, tensor conversion
-├── rnn.py            # Vanilla RNN model, training, and evaluation
-├── lstm.py           # LSTM model with GPU support
-├── gru.py            # GRU model
-├── test.py           # PyTorch/CUDA environment check
-├── rnn_loss.png      # RNN training loss curve
-├── lstm_loss.png     # LSTM training loss curve
-├── gru_loss.png      # GRU training loss curve
-└── data/
-    └── data/
-        └── names/    # Language name files (.txt)
-```
+The previous README reported **73% RNN, 83% LSTM, and 84% GRU accuracy**. The scripts print accuracy when run, but the repository does not commit a test log, prediction file, split indices, or metric table tying those three numbers to a particular run. Treat them as **historically reported values**, not verified or freshly reproduced results. The one-point GRU–LSTM gap is too small to establish a reliable winner without repeated runs and uncertainty estimates.
 
----
+The committed training-loss plots are available for [RNN](Results/rnn_loss.png), [LSTM](Results/lstm_loss.png), and [GRU](Results/gru_loss.png). They show noisy **per-name training losses**, not validation curves. The RNN plot has large spikes and an upward-looking envelope; the gated-model plots also have spikes. These images alone cannot identify vanishing or exploding gradients, diagnose overfitting, or explain the reported accuracy gaps. A stronger explanation would require repeated seeded splits, matched depth/parameter budgets, validation curves, and error analysis by language and name length.
 
-## Model Architectures
+The dataset is imbalanced across languages, so overall accuracy may hide weak performance on smaller classes. No per-language evaluation is committed. There is also no measured runtime, memory, or parameter-count comparison; the reported 1-point GRU advantage does not establish that it is the most efficient model here.
 
-### Vanilla RNN (`rnn.py`)
+## Run the experiment
 
-A manually implemented RNN cell without using `nn.RNN`.
-
-```
-Input (one-hot char) + Previous Hidden State
-        ↓
-    nn.Linear → tanh → New Hidden State
-    nn.Linear → Output logits
-```
-
-- Single-layer, single hidden state
-- Output taken at the **last timestep**
-- No GPU support (CPU only)
-
-### LSTM (`lstm.py`)
-
-Uses PyTorch's built-in `nn.LSTM` with support for multiple layers and GPU acceleration.
-
-```
-Input sequence → nn.LSTM (2 layers) → Final timestep output → nn.Linear → Logits
-```
-
-- Maintains both **hidden state** and **cell state**
-- 2-layer stacked LSTM
-- Full **CUDA GPU support**
-
-### GRU (`gru.py`)
-
-Uses PyTorch's built-in `nn.GRU`, a simpler alternative to LSTM.
-
-```
-Input sequence → nn.GRU (2 layers) → Final timestep output → nn.Linear → Logits
-```
-
-- Single **hidden state** (no cell state)
-- 2-layer stacked GRU
-- CPU only (no explicit device mapping)
-
----
-
-## Hyperparameters
-
-| Parameter      | Value  |
-|----------------|--------|
-| Hidden Size    | 256    |
-| Learning Rate  | 0.0005 |
-| Epochs         | 15     |
-| Optimizer      | Adam   |
-| Loss Function  | CrossEntropyLoss |
-| Gradient Clip  | 1.0    |
-| LSTM/GRU Layers| 2      |
-
----
-
-## Training Loss Curves
-
-All three models were trained for 15 epochs (~265,000 steps on the full dataset).
-
-| RNN | LSTM | GRU |
-|-----|------|-----|
-| ![RNN Loss](rnn_loss.png) | ![LSTM Loss](lstm_loss.png) | ![GRU Loss](gru_loss.png) |
-
-**Observations:**
-- The **RNN** loss shows an increasing trend over training, suggesting the model struggles to generalize and may be suffering from the vanishing/exploding gradient problem
-- The **LSTM** loss stabilizes and shows a slight downward trend, benefiting from its gating mechanisms
-- The **GRU** loss behaves similarly to LSTM but with slightly higher variance, consistent with its simpler architecture
-
----
-
-## Results
-
-| Model | Accuracy |
-|-------|----------|
-| Vanilla RNN | 73.00% |
-| LSTM | 83.00% |
-| GRU | 84.00% |
-
-The gated architectures (LSTM and GRU) significantly outperform the vanilla RNN by **+10-11%**, demonstrating the importance of gating mechanisms for capturing long-range dependencies in sequential data. GRU edges out LSTM by 1% while using fewer parameters, making it the most efficient model for this task.
-
----
-
-## Requirements
-
-```
-torch
-matplotlib
-scikit-learn
-unidecode
-```
-
-Install dependencies:
+From the repository root, in a Python environment with PyTorch, scikit-learn, Unidecode, and Matplotlib installed:
 
 ```bash
-pip install torch matplotlib scikit-learn unidecode
-```
-
----
-
-## Usage
-
-**Check your environment:**
-```bash
-python test.py
-```
-
-**Train and evaluate each model:**
-```bash
+python -m pip install torch scikit-learn Unidecode matplotlib
 python rnn.py
 python lstm.py
 python gru.py
 ```
 
-Each script will:
-1. Train the model for 15 epochs
-2. Print loss every 3000 steps
-3. Evaluate on the test set and print accuracy
-4. Run sample predictions (`Mike`, `Qin`, `Fernando`)
-5. Save the model weights (`.pth`) and loss plot (`.png`)
+The dataset is already present at the path expected by `utils.py`. Each script trains for 15 epochs, prints test accuracy and predictions for `Mike`, `Qin`, and `Fernando`, and writes a `.pth` state dictionary and a loss `.png` **to the current working directory**. Those printed example predictions depend on the trained run; they are not guaranteed language labels. Training is long because each name is processed separately.
 
----
+[`Models/`](Models/) and [`Results/`](Results/) contain previously committed checkpoints and plots; the scripts do **not** save new artifacts into those directories. The committed `requirements.txt` is UTF-16 LE and includes a CUDA-specific PyTorch pin, so a plain `pip install -r requirements.txt` may fail on other platforms. The direct package command above reflects imports and has not been verified as a fresh-environment install. [`test.py`](test.py) calls `torch.cuda.get_device_name(0)` unconditionally and may fail on a CPU-only machine; it is not required for training.
 
-## Key Differences Between Models
+## Reproducibility limits
 
-| Feature | Vanilla RNN | LSTM | GRU |
-|--------|-------------|------|-----|
-| Implementation | Manual (`nn.Linear`) | `nn.LSTM` | `nn.GRU` |
-| Hidden States | 1 (hidden) | 2 (hidden + cell) | 1 (hidden) |
-| Layers | 1 | 2 | 2 |
-| GPU Support | No | Yes | No |
-| Parameters | Fewest | Most | Medium |
-| Gradient Flow | Weakest | Best | Good |
-
----
+The saved `.pth` files are model weights without the corresponding split, label order, package versions, or evaluation record. Language labels are assigned in filesystem enumeration order, making an independently reconstructed label map potentially different. The scripts do not load the committed checkpoints. To make the comparison reproducible, record the exact label mapping and split indices, seed all random sources, save evaluation outputs, and run multiple trials.
 
 ## References
 
-- [Jake Tae – PyTorch RNN Tutorial](https://jaketae.github.io/study/pytorch-rnn/)
-- [PyTorch Documentation – RNN](https://pytorch.org/docs/stable/generated/torch.nn.RNN.html)
-- [PyTorch Documentation – LSTM](https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html)
-- [PyTorch Documentation – GRU](https://pytorch.org/docs/stable/generated/torch.nn.GRU.html)
-- [Understanding LSTM Networks – Colah's Blog](https://colah.github.io/posts/2015-08-Understanding-LSTMs/)
+- [PyTorch tutorial: Classifying Names with a Character-Level RNN](https://pytorch.org/tutorials/intermediate/char_rnn_classification_tutorial.html)
+- [PyTorch `nn.LSTM`](https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html) and [`nn.GRU`](https://pytorch.org/docs/stable/generated/torch.nn.GRU.html)
+- [Understanding LSTM Networks](https://colah.github.io/posts/2015-08-Understanding-LSTMs/)
